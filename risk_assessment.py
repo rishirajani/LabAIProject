@@ -19,14 +19,11 @@ MAX_HEAT_DAYS_FOR_NORMALISATION = 30.0
 # impervious-surface fraction is available.
 DEFAULT_IMPERVIOUS_FRACTION = 0.80
 
-# Approximate topographic basin-depth values for the four Stuttgart-Mitte tiles.
-# Values are normalised 0..1 for the score model; they can be replaced by raster-derived values later.
-BASIN_DEPTH_BY_ZONE = {
-    "Zone_513_5402": 0.70,
-    "Zone_513_5403": 0.85,
-    "Zone_514_5402": 0.65,
-    "Zone_514_5403": 0.75,
-}
+# Topographic exposure is now derived per zone from the LGL Baden-Württemberg
+# DGM1 (1 m resolution) by terrain_dgm.py and stored on each AnalysisZone as
+# uhi:hasTopographicExposure. It replaces the previous hardcoded basin-depth
+# table. The fallback below is only used if terrain_dgm.py has not yet run.
+DEFAULT_TOPOGRAPHIC_EXPOSURE = 0.35
 
 # Score thresholds. Tune after validation against external UHI studies or field data.
 
@@ -45,7 +42,7 @@ PREFIX geo:  <http://www.opengis.net/ont/geosparql#>
 # These should be calibrated or sensitivity-tested against measured UHI data in future work.
 W_SVF = 0.35
 W_DENSITY = 0.20
-W_BASIN = 0.15
+W_TOPO = 0.15
 W_VEGETATION = 0.10
 W_IMPERVIOUS = 0.10
 W_HEAT_DAYS = 0.10
@@ -53,7 +50,7 @@ W_HEAT_DAYS = 0.10
 RISK_MODEL_FORMULA = (
     f"{W_SVF:.2f}*(1-SVF)+"
     f"{W_DENSITY:.2f}*density+"
-    f"{W_BASIN:.2f}*basinDepth+"
+    f"{W_TOPO:.2f}*topographicExposure+"
     f"{W_VEGETATION:.2f}*(1-vegetationFraction)+"
     f"{W_IMPERVIOUS:.2f}*imperviousFraction+"
     f"{W_HEAT_DAYS:.2f}*heatDayNorm"
@@ -69,7 +66,7 @@ class ZoneIndicators:
     urban_density: float
     impervious_fraction: float
     sky_view_factor: float
-    basin_depth: float
+    topographic_exposure: float
     vegetation_fraction: float
     tree_count: int
     heat_day_count: int
@@ -152,7 +149,9 @@ def compute_zone_indicators(g: Graph) -> list[ZoneIndicators]:
         impervious_fraction = get_literal_float(g, zone, UHI.hasImperviousSurfaceFraction, DEFAULT_IMPERVIOUS_FRACTION)
         vegetation_fraction = get_literal_float(g, zone, UHI.hasVegetationFraction, 0.0)
         tree_count = get_literal_int(g, zone, UHI.hasTreeCount, 0)
-        basin_depth = BASIN_DEPTH_BY_ZONE.get(zone_id, 0.70)
+        topographic_exposure = clamp(get_literal_float(
+            g, zone, UHI.hasTopographicExposure, DEFAULT_TOPOGRAPHIC_EXPOSURE
+        ))
 
         # Preferred: use raster-derived SVF from the LoD2 SVF pipeline if available.
         # Fallback: approximate SVF from urban density and average building height.
@@ -169,7 +168,7 @@ def compute_zone_indicators(g: Graph) -> list[ZoneIndicators]:
         score = clamp(
             W_SVF * (1.0 - sky_view_factor) +
             W_DENSITY * urban_density +
-            W_BASIN * basin_depth +
+            W_TOPO * topographic_exposure +
             W_VEGETATION * (1.0 - vegetation_fraction) +
             W_IMPERVIOUS * impervious_fraction +
             W_HEAT_DAYS * heat_day_norm
@@ -187,7 +186,7 @@ def compute_zone_indicators(g: Graph) -> list[ZoneIndicators]:
             urban_density=urban_density,
             impervious_fraction=impervious_fraction,
             sky_view_factor=sky_view_factor,
-            basin_depth=basin_depth,
+            topographic_exposure=topographic_exposure,
             vegetation_fraction=vegetation_fraction,
             tree_count=tree_count,
             heat_day_count=heat_days,
@@ -214,7 +213,7 @@ def add_zone_assessment(g: Graph, ind: ZoneIndicators) -> URIRef:
         (UHI.hasSkyViewFactor, ind.sky_view_factor, XSD.decimal),
         (UHI.hasAverageSkyViewFactor, ind.sky_view_factor, XSD.decimal),
         (UHI.hasUrbanDensity, ind.urban_density, XSD.decimal),
-        (UHI.hasBasinDepth, ind.basin_depth, XSD.decimal),
+        (UHI.hasTopographicExposure, ind.topographic_exposure, XSD.decimal),
         (UHI.hasHeatDayCount, ind.heat_day_count, XSD.integer),
         (UHI.hasImperviousSurfaceFraction, ind.impervious_fraction, XSD.decimal),
     ]
@@ -339,3 +338,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    

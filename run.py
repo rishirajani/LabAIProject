@@ -13,6 +13,7 @@ SCRIPTS = [
     "citygml_to_rdf.py",
     "climate_data.py",
     "osm_enrichment.py",
+    "terrain_dgm.py",
     "risk_assessment.py",
     "queries_and_viz.py",
 ]
@@ -50,3 +51,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

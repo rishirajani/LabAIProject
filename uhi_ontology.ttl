@@ -648,6 +648,22 @@ uhi:AnalysisZone a owl:Class ;
         sosa:FeatureOfInterest,
         bot:Zone .
 
+uhi:CalibrationResult a owl:Class ;
+    rdfs:label "Calibration result"@en ;
+    rdfs:comment "Result of empirically calibrating the project ΔT formula ΔT = α + β·score against external observations (e.g. DWD station measurements). Stores the linear coefficients α and β that risk_assessment.py reads at runtime in place of project defaults."@en .
+
+uhi:hasCalibrationAlpha a owl:DatatypeProperty ;
+    rdfs:label "has calibration alpha"@en ;
+    rdfs:comment "Intercept α of the calibrated linear relation ΔT = α + β·score, in degrees Celsius. Written by uhi_calibration.py from DWD station measurements with elevation correction and a Stuttgart Kessel adjustment."@en ;
+    rdfs:domain uhi:CalibrationResult ;
+    rdfs:range xsd:decimal .
+
+uhi:hasCalibrationBeta a owl:DatatypeProperty ;
+    rdfs:label "has calibration beta"@en ;
+    rdfs:comment "Slope β of the calibrated linear relation ΔT = α + β·score, in degrees Celsius per unit score. Written by uhi_calibration.py from DWD station measurements."@en ;
+    rdfs:domain uhi:CalibrationResult ;
+    rdfs:range xsd:decimal .
+
 [] a owl:AllDifferent ;
     owl:distinctMembers ( alkis:Flachdach alkis:Pultdach alkis:Tonnendach alkis:Kuppeldach alkis:Mansarddach alkis:Zeltdach alkis:Mischform alkis:UnbekannterDachtyp ) .
 

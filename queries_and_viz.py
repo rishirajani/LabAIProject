@@ -94,12 +94,13 @@ def run_queries(g: Graph) -> None:
         )
 
     q3 = SPARQL_PREFIXES + """
-    SELECT ?zone ?score ?category ?svf ?density ?topo ?veg ?trees ?imperv ?heatDays
+    SELECT ?zone ?score ?category ?svf ?density ?topo ?canopy ?veg ?trees ?imperv ?heatDays
     WHERE {
         ?zone uhi:hasHeatRiskAssessment ?assessment ;
               uhi:hasSkyViewFactor ?svf ;
               uhi:hasUrbanDensity ?density ;
               uhi:hasTopographicExposure ?topo ;
+              uhi:hasTreeCanopyCoverage ?canopy ;
               uhi:hasVegetationFraction ?veg ;
               uhi:hasTreeCount ?trees ;
               uhi:hasImperviousSurfaceFraction ?imperv ;
@@ -112,12 +113,12 @@ def run_queries(g: Graph) -> None:
     """
 
     print("\nQ3 — Why zones are risky: indicator explanation")
-    print(f"  {'Zone':<18} {'Cat':<12} {'Score':>6} {'SVF':>6} {'Dens':>6} {'Topo':>6} {'Veg':>6} {'Trees':>7} {'Imperv':>7} {'Heat':>5}")
+    print(f"  {'Zone':<18} {'Cat':<12} {'Score':>6} {'SVF':>6} {'Dens':>6} {'Topo':>6} {'TCD':>6} {'OSMVeg':>7} {'Trees':>7} {'Imperv':>7} {'Heat':>5}")
     for row in g.query(q3):
         print(
             f"  {local_name(row.zone):<18} {local_name(row.category):<12} "
             f"{float(row.score):>6.3f} {float(row.svf):>6.3f} {float(row.density):>6.3f} "
-            f"{float(row.topo):>6.3f} {float(row.veg):>6.3f} {int(row.trees):>7} "
+            f"{float(row.topo):>6.3f} {float(row.canopy):>6.3f} {float(row.veg):>7.3f} {int(row.trees):>7} "
             f"{float(row.imperv):>7.3f} {int(row.heatDays):>5}"
         )
 

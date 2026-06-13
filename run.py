@@ -13,6 +13,7 @@ SCRIPTS = [
     "citygml_to_rdf.py",
     "climate_data.py",
     "osm_enrichment.py",
+    "clms_landcover.py",
     "terrain_dgm.py",
     "risk_assessment.py",
     "queries_and_viz.py",

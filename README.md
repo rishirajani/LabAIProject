@@ -6,14 +6,15 @@ The current model no longer classifies vulnerable buildings with a simple “at 
 
 ## Overview
 
-The pipeline creates a unified knowledge graph from four data sources:
+The pipeline creates a unified knowledge graph from five data sources:
 
 - **CityGML LoD2**: building geometry, height, footprint, roof type, function, analysis zone
 - **Open-Meteo**: 2024 daily maximum temperature observations and heat-day observations using SOSA
 - **OpenStreetMap**: vegetation fraction, tree count, and vegetation types per analysis zone
 - **LGL Baden-Württemberg DGM1**: 1 m digital terrain model, used to derive per-zone topographic exposure
+- **Copernicus Land Monitoring Service HRL**: tree cover density 2023 and imperviousness density 2024, 10 m raster
 
-Derived indicators such as Sky View Factor, urban density, topographic exposure, impervious surface fraction, vegetation fraction, and heat-day count are combined into zone-level and building-level heat-risk assessments.
+Derived indicators such as Sky View Factor, urban density, topographic exposure, impervious surface fraction, tree canopy coverage, and heat-day count are combined into zone-level and building-level heat-risk assessments.
 
 ## Data
 
@@ -39,6 +40,22 @@ Place the extracted XYZ files in:
 dgm1_32_513_5402_2_bw/
 ```
 
+**CLMS Tree Cover & Imperviousness sources:**
+
+- Tree Cover Density 2023, 10 m raster, clipped to NUTS-3 DE111 — <https://land.copernicus.eu/en/products/high-resolution-layer-forests-and-tree-cover>
+- Imperviousness Density 2024, 10 m raster, EEA tile E42N28 (NVLCC product family) — <https://land.copernicus.eu/en/products/high-resolution-layer-imperviousness>
+
+**Reference system:** ETRS89 / LAEA Europe (EPSG:3035)
+**License:** Free, full, open access under the Copernicus license (no fees, no use restrictions; attribution required as quoted in the Attribution section).
+
+Place the GeoTIFFs in:
+
+```text
+clms_landcover/
+```
+
+The script `clms_landcover.py` locates them automatically by filename pattern (`*TCD*.tif`, `*IMD*.tif`).
+
 ## Installation
 
 Python 3.11+ is recommended.
@@ -60,14 +77,16 @@ Run the scripts in order. Each enrichment step reads and writes `stuttgart_build
 | 2 | `citygml_to_rdf.py` | Convert LoD2 buildings to RDF and create building/zone triples |
 | 3 | `climate_data.py` | Add Open-Meteo SOSA observations and heat-day observations |
 | 4 | `osm_enrichment.py` | Add OSM vegetation fraction, tree count, and vegetation types |
-| 5 | `terrain_dgm.py` | Compute per-zone topographic exposure from the LGL DGM1 (TPI) |
-| 6 | `risk_assessment.py` | Compute zone/building heat-risk assessments and categories |
-| 7 | `queries_and_viz.py` | Run SPARQL queries and generate an interactive map |
+| 5 | `clms_landcover.py` | Per-zone tree canopy coverage and impervious fraction from CLMS HRL |
+| 6 | `terrain_dgm.py` | Compute per-zone topographic exposure from the LGL DGM1 (TPI) |
+| 7 | `risk_assessment.py` | Compute zone/building heat-risk assessments and categories |
+| 8 | `queries_and_viz.py` | Run SPARQL queries and generate an interactive map |
 
 ```bash
 python citygml_to_rdf.py
 python climate_data.py
 python osm_enrichment.py
+python clms_landcover.py
 python terrain_dgm.py
 python risk_assessment.py
 python queries_and_viz.py
@@ -103,9 +122,10 @@ Core properties:
 - `uhi:hasUrbanDensity`
 - `uhi:hasTopographicExposure` (replaces deprecated `uhi:hasBasinDepth`)
 - `uhi:hasMeanElevation`, `uhi:hasMinElevation`, `uhi:hasMaxElevation`, `uhi:hasMeanDepressionDepth` (DGM1-derived, stored for traceability)
-- `uhi:hasVegetationFraction`
+- `uhi:hasTreeCanopyCoverage` (CLMS HRL TCD-derived, used in the score)
+- `uhi:hasVegetationFraction` (OSM-derived, broader land-use; kept for separate queries)
 - `uhi:hasTreeCount`
-- `uhi:hasImperviousSurfaceFraction`
+- `uhi:hasImperviousSurfaceFraction` (CLMS HRL IMD-derived)
 - `uhi:hasHeatDayCount`
 
 Reused vocabularies:
@@ -135,6 +155,25 @@ The reference relief of 10 m corresponds to one standard deviation of TPI over t
 - Baumüller, J., Hoffmann, U., & Reuter, U. (1996). *Climate Booklet for Urban Development*. Ministry of Economy Baden-Württemberg.
 - Ketterer, C., & Matzarakis, A. (2014). Human-biometeorological assessment of the urban heat island in a city with complex topography – The case of Stuttgart, Germany. *Urban Climate*, 10, 573–584. <https://doi.org/10.1016/j.uclim.2014.01.003>
 - Emeis, S., et al. (2022). Urban Atmospheric Boundary-Layer Structure in Complex Topography: An Empirical 3D Case Study for Stuttgart, Germany. *Frontiers in Earth Science*, 10, 840112. <https://doi.org/10.3389/feart.2022.840112>
+
+## Tree canopy coverage and impervious surface fraction (CLMS)
+
+`clms_landcover.py` populates per-zone tree canopy coverage (`uhi:hasTreeCanopyCoverage`) and impervious surface fraction (`uhi:hasImperviousSurfaceFraction`) from Copernicus Land Monitoring Service High Resolution Layers:
+
+- **Tree Cover Density 2023** (10 m raster, clipped to NUTS-3 DE111 Stuttgart Stadtkreis) — values 0..100 % canopy cover per 10 m pixel.
+- **Imperviousness Density 2024** (10 m raster, NVLCC product family, EEA tile E42N28) — values 0..100 % artificially sealed surface per 10 m pixel.
+
+For each 1 km × 1 km zone, the UTM32 zone polygon is reprojected to EPSG:3035 (LAEA Europe, native CRS of both rasters), the rasters are masked to the polygon, and the mean of valid pixels is written as a fraction in [0, 1]. The new tree canopy property feeds the `(1 − treeCanopyCoverage)` term of the composite score in place of the OSM-derived vegetation fraction. The OSM-derived `uhi:hasVegetationFraction` is retained because it answers a different question (broad land-use polygons rather than satellite tree canopy).
+
+The 0.80 hardcoded impervious-fraction fallback previously used in `risk_assessment.py` is now superseded by per-zone CLMS values. Stuttgart-Mitte zones range from 46 % (Zone_514_5402, climbing toward Bopser) to 76 % (Zone_513_5402), substantially differentiated rather than uniformly assumed.
+
+### References
+
+- European Union, Copernicus Land Monitoring Service (2023). *High Resolution Layer Tree Cover Density 2023, raster 10 m, Europe, yearly.* European Environment Agency. <https://land.copernicus.eu/en/products/high-resolution-layer-forests-and-tree-cover>
+- European Union, Copernicus Land Monitoring Service (2024). *Non-Vegetated Land Cover Characteristics – Imperviousness Density 2024, raster 10 m, Europe.* European Environment Agency. <https://land.copernicus.eu/en/products/high-resolution-layer-imperviousness>
+- Cecilia, A., Casasanta, G., Petenko, I., Conidi, A., & Argentini, S. (2022). Measuring the urban heat island of Rome through a dense weather station network and imperviousness Copernicus Land Monitoring Service data. *17th Plinius Conference on Mediterranean Risks*, Plinius17-52. <https://doi.org/10.5194/egusphere-plinius17-52>
+- Półrolniczak, M., Kolendowicz, L., & Tomczyk, A. M. (2024). Urban growth's implications on land surface temperature in a medium-sized European city based on LCZ classification. *Scientific Reports*. (Quantifies LST/IMD relationship at ~0.14 K per 10 % IMD increase.)
+- Copernicus Land Monitoring Service (2024). *Urban heat islands: measured, mapped and managed.* CLMS Feature Article. <https://land.copernicus.eu/en/feature-articles/urban-heat-islands-measured-mapped-and-managed>
 
 ## Validation against Theeuwes (2017)
 
@@ -175,3 +214,4 @@ ORDER BY DESC(?score)
 - Terrain (DGM1): © LGL Baden-Württemberg, dl-de/zero-2-0
 - Climate data: Open-Meteo Historical Weather API, CC BY 4.0
 - OSM data: © OpenStreetMap contributors, ODbL
+- Tree cover and imperviousness: This publication has been prepared using European Union's Copernicus Land Monitoring Service information.

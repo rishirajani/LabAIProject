@@ -6,6 +6,10 @@ add_speaker_notes.py
 
 # Raw CityGML input data — 161 MB; download from https://opengeodata.lgl-bw.de
 LoD2_32_513_5402_2_bw/
+# Raw DGM1 terrain data — 116 MB; download from https://opengeodata.lgl-bw.de
+dgm1_32_513_5402_2_bw/
+# Raw Tree Canopy and Imperviousness Density TIF Files - 25 MB; download from https://land.copernicus.eu/en
+clms_landcover/
 
 # Generated pipeline artifacts (reproducible by running the pipeline)
 stuttgart_heat_risk_map.html

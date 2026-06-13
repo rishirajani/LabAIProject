@@ -9,7 +9,7 @@ PREFIX bot: <https://w3id.org/bot#>
 PREFIX geo: <http://www.opengis.net/ont/geosparql#>
 
 SELECT ?building ?zone ?score ?deltaT ?height ?footprint
-       ?svf ?density ?topo ?veg ?trees ?imperv ?heatDays ?wkt
+       ?svf ?density ?topo ?canopy ?veg ?trees ?imperv ?heatDays ?wkt
 WHERE {
   ?building a bot:Building ;
             uhi:inAnalysisZone ?zone ;
@@ -27,6 +27,7 @@ WHERE {
   ?zone uhi:hasSkyViewFactor ?svf ;
         uhi:hasUrbanDensity ?density ;
         uhi:hasTopographicExposure ?topo ;
+        uhi:hasTreeCanopyCoverage ?canopy ;
         uhi:hasVegetationFraction ?veg ;
         uhi:hasTreeCount ?trees ;
         uhi:hasImperviousSurfaceFraction ?imperv ;
@@ -53,6 +54,8 @@ for row in g.query(SPARQL):
     print(f"SVF: {float(row.svf):.3f}")
     print(f"Density: {float(row.density):.3f}")
     print(f"Topographic exposure: {float(row.topo):.3f}")
+    print(f"Tree canopy coverage (CLMS): {float(row.canopy):.3f}")
+    print(f"OSM vegetation fraction: {float(row.veg):.3f}")
     print(f"Vegetation fraction: {float(row.veg):.3f}")
     print(f"Tree count: {int(row.trees)}")
     print(f"Impervious fraction: {float(row.imperv):.3f}")

@@ -25,6 +25,11 @@ DEFAULT_IMPERVIOUS_FRACTION = 0.80
 # table. The fallback below is only used if terrain_dgm.py has not yet run.
 DEFAULT_TOPOGRAPHIC_EXPOSURE = 0.35
 
+# Tree canopy coverage is derived per zone from the Copernicus HRL Tree Cover
+# Density 2023 raster (10 m) by clms_landcover.py. Fallback assumes very low
+# canopy in a dense urban tile (Stuttgart-Mitte zones range 2.5%-6.4%).
+DEFAULT_TREE_CANOPY_COVERAGE = 0.05
+
 # Score thresholds. Tune after validation against external UHI studies or field data.
 
 MEDIUM_RISK_MIN = 0.25
@@ -51,7 +56,7 @@ RISK_MODEL_FORMULA = (
     f"{W_SVF:.2f}*(1-SVF)+"
     f"{W_DENSITY:.2f}*density+"
     f"{W_TOPO:.2f}*topographicExposure+"
-    f"{W_VEGETATION:.2f}*(1-vegetationFraction)+"
+    f"{W_VEGETATION:.2f}*(1-treeCanopyCoverage)+"
     f"{W_IMPERVIOUS:.2f}*imperviousFraction+"
     f"{W_HEAT_DAYS:.2f}*heatDayNorm"
 )
@@ -68,6 +73,7 @@ class ZoneIndicators:
     sky_view_factor: float
     topographic_exposure: float
     vegetation_fraction: float
+    tree_canopy_coverage: float
     tree_count: int
     heat_day_count: int
     heat_day_norm: float
@@ -148,6 +154,9 @@ def compute_zone_indicators(g: Graph) -> list[ZoneIndicators]:
         urban_density = clamp(total_footprint / TILE_AREA_M2)
         impervious_fraction = get_literal_float(g, zone, UHI.hasImperviousSurfaceFraction, DEFAULT_IMPERVIOUS_FRACTION)
         vegetation_fraction = get_literal_float(g, zone, UHI.hasVegetationFraction, 0.0)
+        tree_canopy_coverage = clamp(get_literal_float(
+            g, zone, UHI.hasTreeCanopyCoverage, DEFAULT_TREE_CANOPY_COVERAGE
+        ))
         tree_count = get_literal_int(g, zone, UHI.hasTreeCount, 0)
         topographic_exposure = clamp(get_literal_float(
             g, zone, UHI.hasTopographicExposure, DEFAULT_TOPOGRAPHIC_EXPOSURE
@@ -169,7 +178,7 @@ def compute_zone_indicators(g: Graph) -> list[ZoneIndicators]:
             W_SVF * (1.0 - sky_view_factor) +
             W_DENSITY * urban_density +
             W_TOPO * topographic_exposure +
-            W_VEGETATION * (1.0 - vegetation_fraction) +
+            W_VEGETATION * (1.0 - tree_canopy_coverage) +
             W_IMPERVIOUS * impervious_fraction +
             W_HEAT_DAYS * heat_day_norm
         )
@@ -188,6 +197,7 @@ def compute_zone_indicators(g: Graph) -> list[ZoneIndicators]:
             sky_view_factor=sky_view_factor,
             topographic_exposure=topographic_exposure,
             vegetation_fraction=vegetation_fraction,
+            tree_canopy_coverage=tree_canopy_coverage,
             tree_count=tree_count,
             heat_day_count=heat_days,
             heat_day_norm=heat_day_norm,
@@ -214,6 +224,7 @@ def add_zone_assessment(g: Graph, ind: ZoneIndicators) -> URIRef:
         (UHI.hasAverageSkyViewFactor, ind.sky_view_factor, XSD.decimal),
         (UHI.hasUrbanDensity, ind.urban_density, XSD.decimal),
         (UHI.hasTopographicExposure, ind.topographic_exposure, XSD.decimal),
+        (UHI.hasTreeCanopyCoverage, ind.tree_canopy_coverage, XSD.decimal),
         (UHI.hasHeatDayCount, ind.heat_day_count, XSD.integer),
         (UHI.hasImperviousSurfaceFraction, ind.impervious_fraction, XSD.decimal),
     ]
@@ -324,7 +335,7 @@ def main() -> None:
             f"  {local_name(ind.zone):<15} score={ind.score:.3f} "
             f"category={local_name(ind.category):<11} "
             f"SVF={ind.sky_view_factor:.3f} density={ind.urban_density:.3f} "
-            f"veg={ind.vegetation_fraction:.3f} heatDays={ind.heat_day_count}"
+            f"canopy={ind.tree_canopy_coverage:.3f} imperv={ind.impervious_fraction:.3f} heatDays={ind.heat_day_count}"
         )
 
     print("\nComputing building heat-risk assessments ...")

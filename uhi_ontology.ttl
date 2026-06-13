@@ -40,9 +40,9 @@ uhi:DailyMaxTemperature a sosa:ObservableProperty ;
 uhi:DefaultUHIScoreModel a owl:NamedIndividual,
         uhi:ScoreBasedHeatRiskModel ;
     rdfs:label "Default UHI score model"@en ;
-    rdfs:comment "Default project score model: 0.35·(1−SVF) + 0.20·density + 0.15·topographicExposure + 0.10·(1−vegetationFraction) + 0.10·imperviousFraction + 0.10·heatDayNorm."@en ;
+    rdfs:comment "Default project score model: 0.35·(1−SVF) + 0.20·density + 0.15·topographicExposure + 0.10·(1−treeCanopyCoverage) + 0.10·imperviousFraction + 0.10·heatDayNorm."@en ;
     uhi:hasRiskThreshold 0.6 ;
-    uhi:hasScoreFormula "0.35*(1-SVF)+0.20*density+0.15*topographicExposure+0.10*(1-vegetationFraction)+0.10*imperviousFraction+0.10*heatDayNorm" .
+    uhi:hasScoreFormula "0.35*(1-SVF)+0.20*density+0.15*topographicExposure+0.10*(1-treeCanopyCoverage)+0.10*imperviousFraction+0.10*heatDayNorm" .
 
 uhi:ExtremeRisk a owl:Class,
         owl:NamedIndividual,
@@ -289,8 +289,13 @@ uhi:hasHeatRiskAssessment a owl:ObjectProperty ;
 
 uhi:hasImperviousSurfaceFraction a owl:DatatypeProperty ;
     rdfs:label "has impervious surface fraction"@en ;
-    rdfs:comment "Fraction of an analysis zone covered by impervious surfaces."@en,
-        "Fraction of the analysis zone covered by impervious or heat-retaining surfaces."@en ;
+    rdfs:comment "Fraction of the analysis zone covered by impervious (artificially sealed) surfaces, in [0, 1]. Derived from the Copernicus Land Monitoring Service High Resolution Layer Imperviousness Density 2024 (10 m raster) by clms_landcover.py. Replaces a previously hardcoded 0.80 fallback for dense urban tiles. Reference: European Union, Copernicus Land Monitoring Service (2024); used directly as a UHI indicator e.g. by Cecilia et al. (2022) and Polrolniczak et al. (2024)."@en ;
+    rdfs:domain uhi:AnalysisZone ;
+    rdfs:range xsd:decimal .
+
+uhi:hasTreeCanopyCoverage a owl:DatatypeProperty ;
+    rdfs:label "has tree canopy coverage"@en ;
+    rdfs:comment "Fraction of the analysis zone covered by tree canopy, in [0, 1]. Derived from the Copernicus Land Monitoring Service High Resolution Layer Tree Cover Density 2023 (10 m raster) by clms_landcover.py. Used as the vegetation cooling input to the UHI score, since tree canopy (providing shade and evapotranspiration) is the dominant vegetation-driven UHI mitigation mechanism. Distinct from uhi:hasVegetationFraction, which is derived from OSM land-use polygons and measures broader vegetation land cover. Reference: European Union, Copernicus Land Monitoring Service (2023)."@en ;
     rdfs:domain uhi:AnalysisZone ;
     rdfs:range xsd:decimal .
 

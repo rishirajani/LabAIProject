@@ -42,6 +42,7 @@ env/
 *.swp
 *.swo
 *~
+.dwd_cache
 
 # macOS
 .DS_Store

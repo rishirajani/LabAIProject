@@ -52,3 +52,7 @@ sensitivity_tornado.png
 sensitivity_lst_hist.png
 lst_cell_validation.png
 validation_figure.png
+
+# Additional raw data
+TreeCover/
+Imperviousness/

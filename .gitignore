@@ -53,6 +53,10 @@ sensitivity_tornado.png
 sensitivity_lst_hist.png
 lst_cell_validation.png
 validation_figure.png
+intervention_map.png
+lst_vs_score_dualmap.html
+lst_overlay.png
+score_overlay.png
 
 # Additional raw data
 TreeCover/

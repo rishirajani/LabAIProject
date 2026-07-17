@@ -46,7 +46,6 @@ Requires: rdflib, rasterio, shapely, pyproj, numpy (already in requirements.txt)
 
 from __future__ import annotations
 
-import glob
 import re
 from pathlib import Path
 
@@ -55,7 +54,7 @@ import rasterio
 from rasterio.mask import mask
 from rasterio.warp import transform_geom
 from rdflib import Graph, Literal, Namespace, RDF, URIRef, XSD
-from shapely.geometry import box, mapping, Point
+from shapely.geometry import box, mapping
 
 import terrain_tpi as tpi
 # Reuse the project's canonical namespace definitions so URIs match the rest of
@@ -79,7 +78,6 @@ except ImportError:
 BASE_DIR = Path(__file__).resolve().parent
 TTL_FILE = BASE_DIR / "stuttgart_buildings.ttl"
 CLMS_DIR = BASE_DIR / "clms_landcover"
-DGM_DIR = BASE_DIR                     # terrain_dgm writes exposure into graph already
 
 CELL_SIZE = 100.0                      # metres — matches Landsat thermal resolution
 VALID_MAX = 100                        # CLMS valid pixel ceiling (0..100 %)
@@ -195,30 +193,131 @@ def read_zone_context(g: Graph):
 
 
 def read_buildings(g: Graph):
-    """Return list of (zone_id, easting, northing, svf, footprint_area)."""
+    """Read buildings using their representative points.
+
+    Returns:
+        list of (
+            zone_id,
+            representative_easting,
+            representative_northing,
+            sky_view_factor,
+            footprint_area,
+        )
+
+    The representative point is preferred for assigning a building to one
+    100 m grid cell because it is guaranteed to lie within the footprint.
+    The mathematical centroid is retained as a defensive fallback.
+    """
+
     q = _sparql_prefixes() + """
-    SELECT ?zone ?wkt ?svf ?foot WHERE {
+    SELECT ?zone ?repWkt ?centroidWkt ?svf ?foot WHERE {
         ?b a bot:Building ;
            uhi:inAnalysisZone ?zone ;
-           uhi:hasFootprintArea ?foot ;
-           geo:hasGeometry ?geom .
-        ?geom geo:asWKT ?wkt .
-        OPTIONAL { ?b uhi:hasSkyViewFactor ?svf }
+           uhi:hasFootprintArea ?foot .
+
+        OPTIONAL {
+            ?b uhi:hasRepresentativePointGeometry ?repGeom .
+            ?repGeom geo:asWKT ?repWkt .
+        }
+
+        OPTIONAL {
+            ?b uhi:hasCentroidGeometry ?centroidGeom .
+            ?centroidGeom geo:asWKT ?centroidWkt .
+        }
+
+        OPTIONAL {
+            ?b uhi:hasSkyViewFactor ?svf .
+        }
+
+        FILTER(BOUND(?repWkt) || BOUND(?centroidWkt))
     }
     """
-    pt_re = re.compile(r"POINT\(\s*([-0-9.]+)\s+([-0-9.]+)\s*\)")
-    out = []
-    for r in g.query(q):
-        m = pt_re.search(str(r.wkt))
-        if not m:
+
+    point_pattern = re.compile(
+        r"POINT\(\s*([-0-9.]+)\s+([-0-9.]+)\s*\)"
+    )
+
+    buildings = []
+
+    for row in g.query(q):
+        point_wkt = (
+            row.repWkt
+            if row.repWkt is not None
+            else row.centroidWkt
+        )
+
+        match = point_pattern.search(str(point_wkt))
+
+        if not match:
             continue
-        out.append((
-            local_name(r.zone),
-            float(m.group(1)), float(m.group(2)),
-            float(r.svf) if r.svf is not None else None,
-            float(r.foot),
-        ))
-    return out
+
+        buildings.append(
+            (
+                local_name(row.zone),
+                float(match.group(1)),
+                float(match.group(2)),
+                (
+                    float(row.svf)
+                    if row.svf is not None
+                    else None
+                ),
+                float(row.foot),
+            )
+        )
+
+    return buildings
+
+
+def remove_existing_grid_cells(g: Graph) -> tuple[int, int, int]:
+    """Remove existing grid cells and their geometry/assessment resources."""
+
+    cells = {
+        cell
+        for cell in g.subjects(
+            RDF.type,
+            UHI.GridCell,
+        )
+    }
+
+    geometry_nodes: set[URIRef] = set()
+    assessment_nodes: set[URIRef] = set()
+
+    for cell in cells:
+        geometry_nodes.update(
+            geometry
+            for geometry in g.objects(
+                cell,
+                GEO.hasGeometry,
+            )
+            if isinstance(geometry, URIRef)
+        )
+
+        assessment_nodes.update(
+            assessment
+            for assessment in g.objects(
+                cell,
+                UHI.hasHeatRiskAssessment,
+            )
+            if isinstance(assessment, URIRef)
+        )
+
+    for cell in cells:
+        g.remove((cell, None, None))
+        g.remove((None, None, cell))
+
+    for geometry in geometry_nodes:
+        g.remove((geometry, None, None))
+        g.remove((None, None, geometry))
+
+    for assessment in assessment_nodes:
+        g.remove((assessment, None, None))
+        g.remove((None, None, assessment))
+
+    return (
+        len(cells),
+        len(geometry_nodes),
+        len(assessment_nodes),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +344,19 @@ def main() -> None:
     buildings = read_buildings(g)
     print(f"  {len(buildings)} buildings, {len(zone_ctx)} zones in graph")
 
+    removed_cells, removed_geometries, removed_assessments = (
+        remove_existing_grid_cells(g)
+    )
+    triples_after_cleanup = len(g)
+
+    if removed_cells:
+        print(
+            "  Replacing existing grid: "
+            f"{removed_cells} cells, "
+            f"{removed_geometries} geometries, "
+            f"{removed_assessments} assessments removed"
+        )
+
     # Bucket buildings by zone for fast per-cell lookup
     by_zone: dict[str, list] = {z: [] for z in ZONE_BBOXES}
     for zid, e, n, svf, foot in buildings:
@@ -254,6 +366,7 @@ def main() -> None:
     n_per_side = int(1000 / CELL_SIZE)   # 10 cells per 1 km zone edge
     total_cells = 0
     cell_scores = []
+    assigned_buildings = 0
 
     for zid, (xmin, ymin, xmax, ymax) in ZONE_BBOXES.items():
         ctx = zone_ctx.get(zid, {
@@ -297,6 +410,7 @@ def main() -> None:
                     (e, n, svf, foot) for (e, n, svf, foot) in by_zone[zid]
                     if cx0 <= e < cx1 and cy0 <= n < cy1
                 ]
+                assigned_buildings += len(cell_buildings)
                 if cell_buildings:
                     svf_vals = [b[2] for b in cell_buildings if b[2] is not None]
                     svf = float(np.mean(svf_vals)) if svf_vals else ctx["svf"]
@@ -324,7 +438,6 @@ def main() -> None:
                 geom_uri = EX[f"{cell_id}_geom"]
                 assess_uri = EX[f"GridCellHeatRiskAssessment_{cell_id}"]
 
-                ccx, ccy = cx0 + CELL_SIZE / 2, cy0 + CELL_SIZE / 2
                 wkt = (f"<http://www.opengis.net/def/crs/EPSG/0/25832> "
                        f"POLYGON(({cx0} {cy0}, {cx1} {cy0}, {cx1} {cy1}, "
                        f"{cx0} {cy1}, {cx0} {cy0}))")
@@ -364,8 +477,19 @@ def main() -> None:
     print(f"Score mean/std     : {np.mean(scores_only):.3f} / {np.std(scores_only):.3f}")
 
     g.serialize(destination=str(TTL_FILE), format="turtle")
-    print(f"\nTriples added      : {len(g) - triples_before}")
+    print(
+        f"\nGrid triples written: "
+        f"{len(g) - triples_after_cleanup}"
+    )
+    print(
+        f"Net triple change   : "
+        f"{len(g) - triples_before:+d}"
+    )
     print(f"Triples total      : {len(g)}")
+    print(
+        "Buildings assigned : "
+        f"{assigned_buildings} / {len(buildings)}"
+    )
     print(f"Updated graph written to {TTL_FILE.name}")
 
 

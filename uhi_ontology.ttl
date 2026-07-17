@@ -684,3 +684,24 @@ uhi:hasGridResolution a owl:DatatypeProperty ;
     rdfs:comment "Edge length of a square analysis grid cell, in metres (e.g. 100)."@en ;
     rdfs:domain uhi:GridCell ;
     rdfs:range xsd:integer .
+
+uhi:hasRepresentativePointGeometry
+    a owl:ObjectProperty ;
+    rdfs:label "has representative point geometry"@en ;
+    rdfs:comment "Links a spatial feature to a point guaranteed to lie within its footprint geometry."@en ;
+    rdfs:domain geo:Feature ;
+    rdfs:range geo:Geometry .
+
+uhi:hasCentroidGeometry
+    a owl:ObjectProperty ;
+    rdfs:label "has centroid geometry"@en ;
+    rdfs:comment "Links a feature to its mathematical centroid geometry."@en ;
+    rdfs:domain geo:Feature ;
+    rdfs:range geo:Geometry .
+
+uhi:hasFootprintGeometry
+    a owl:ObjectProperty ;
+    rdfs:label "has footprint geometry"@en ;
+    rdfs:comment "Links a building to its two-dimensional footprint geometry."@en ;
+    rdfs:domain bot:Building ;
+    rdfs:range geo:Geometry .

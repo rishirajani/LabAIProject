@@ -13,7 +13,7 @@ per-building, queryable, extensible assessments the satellite cannot.
 Correlations are reported at four scales:
     zone level          n = 4      (coarse, suggestive)
     grid-cell level     n ~ 400    (100 m cells; matches Landsat thermal — the
-                                    statistically robust number, requires
+                                    primary fine-scale empirical comparison, requires
                                     subzone_grid.py to have been run)
     Landsat-pixel level n ~ 400    (native thermal grid, honest resolution)
     building level      n ~ 5800   (note: spatial autocorrelation inflates n)
@@ -39,7 +39,6 @@ import glob
 import os
 import re
 import sys
-from collections import defaultdict
 
 import numpy as np
 import rasterio
@@ -183,11 +182,11 @@ def read_graph_scores(ttl_path):
     pt_re = re.compile(r"POINT\(\s*([-0-9.]+)\s+([-0-9.]+)\s*\)")
     building_rows = []
     for r in g.query(_prefixes() + """
-        SELECT ?b ?zone ?score ?wkt WHERE {
+        SELECT DISTINCT ?b ?zone ?score ?wkt WHERE {
             ?b a bot:Building ;
                uhi:inAnalysisZone ?zone ;
                uhi:hasHeatRiskAssessment ?a ;
-               geo:hasGeometry ?geom .
+               uhi:hasRepresentativePointGeometry ?geom .
             ?a uhi:hasHeatRiskScore ?score .
             ?geom geo:asWKT ?wkt .
         }"""):
@@ -280,8 +279,16 @@ def main():
     # ---- ZONE LEVEL ----
     zones = list(ZONE_BBOXES)
     zone_lst = {z: mean_lst_over_bbox(scene_lsts, ZONE_BBOXES[z]) for z in zones}
-    zs = [zone_scores[z] for z in zones if z in zone_scores]
-    zl = [zone_lst[z] for z in zones if z in zone_scores]
+    valid_zones = [
+        zone
+        for zone in zones
+        if (
+            zone in zone_scores
+            and not np.isnan(zone_lst[zone])
+        )
+    ]
+    zs = [zone_scores[z] for z in valid_zones]
+    zl = [zone_lst[z] for z in valid_zones]
     if len(zs) >= 3:
         rho_zone, p_zone = spearmanr(zs, zl)
         results["zone"] = (rho_zone, p_zone, len(zs))
@@ -346,17 +353,21 @@ def main():
 
 
 def make_cell_comparison_plot(cell_rows, scene_lsts):
-    """Side-by-side: per-cell model score vs per-cell mean LST."""
+    """Side-by-side: per-cell model score vs per-cell mean LST, on a basemap."""
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        import matplotlib.colors as mcolors
-        from matplotlib import cm
+        from matplotlib.patches import Rectangle
+        from matplotlib.collections import PatchCollection
     except ImportError:
         print("[i] matplotlib not installed; skipping --plot.")
         return
-
+ 
+    CELL = 100.0        # metres — matches subzone_grid.py
+    FILL_ALPHA = 0.6    # continuous gradients need more opacity than categories
+    PAD = 220.0
+ 
     xs, ys, scores, lsts = [], [], [], []
     for cid, score, cx, cy, bbox in cell_rows:
         lstv = mean_lst_over_bbox(scene_lsts, bbox)
@@ -366,23 +377,55 @@ def make_cell_comparison_plot(cell_rows, scene_lsts):
     if not scores:
         print("[i] No valid cells to plot.")
         return
-
+ 
     xs = np.array(xs); ys = np.array(ys)
     scores = np.array(scores); lsts = np.array(lsts)
     rho, _ = spearmanr(scores, lsts)
-
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
-    sc0 = axes[0].scatter(xs, ys, c=scores, cmap="YlOrRd", s=60, marker="s")
+ 
+    half = CELL / 2.0
+    xlim = (xs.min() - half - PAD, xs.max() + half + PAD)
+    ylim = (ys.min() - half - PAD, ys.max() + half + PAD)
+ 
+    def cell_map(ax, values, label):
+        """Filled 100 m cells coloured by `values`, with attached colorbar."""
+        rects = [Rectangle((x - half, y - half), CELL, CELL)
+                 for x, y in zip(xs, ys)]
+        pc = PatchCollection(
+            rects,
+            cmap="YlOrRd",
+            edgecolor="white",
+            linewidth=0.3,
+            alpha=FILL_ALPHA,
+            zorder=3,
+        )
+        pc.set_array(values)
+        ax.add_collection(pc)
+        ax.set_xlim(*xlim)
+        ax.set_ylim(*ylim)
+        ax.set_aspect("equal")
+        ax.set_xticks([]); ax.set_yticks([])
+        plt.colorbar(pc, ax=ax, fraction=0.046, label=label)
+        try:
+            import contextily as ctx
+            ctx.add_basemap(
+                ax,
+                crs=TARGET_CRS,
+                source=ctx.providers.CartoDB.Positron,
+                zorder=1,
+                attribution_size=5,
+            )
+        except Exception as exc:
+            print(f"[i] basemap unavailable ({exc}); plain background.")
+ 
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5), layout="constrained")
+ 
+    cell_map(axes[0], scores, "score")
     axes[0].set_title("Model risk score (per 100 m cell)")
-    plt.colorbar(sc0, ax=axes[0], fraction=0.046, label="score")
-
-    sc1 = axes[1].scatter(xs, ys, c=lsts, cmap="YlOrRd", s=60, marker="s")
+ 
+    cell_map(axes[1], lsts, "°C")
     axes[1].set_title("Observed LST (4-scene mean, per cell)")
-    plt.colorbar(sc1, ax=axes[1], fraction=0.046, label="°C")
-
-    for ax in axes[:2]:
-        ax.set_aspect("equal"); ax.set_xticks([]); ax.set_yticks([])
-
+ 
+    # Panel 3: agreement scatter — a chart, not a map; unchanged.
     axes[2].scatter(scores, lsts, s=18, alpha=0.5, color="#B05A3C")
     m, b = np.polyfit(scores, lsts, 1)
     xr = np.linspace(scores.min(), scores.max(), 10)
@@ -390,11 +433,11 @@ def make_cell_comparison_plot(cell_rows, scene_lsts):
     axes[2].set_xlabel("model score"); axes[2].set_ylabel("mean LST (°C)")
     axes[2].set_title(f"Per-cell agreement  rho = {rho:.3f}  (n={len(scores)})")
     axes[2].grid(alpha=0.3)
-
+ 
     fig.suptitle("Sub-zone (100 m) model score vs Landsat surface temperature",
                  fontsize=14, weight="bold")
     out = "lst_cell_validation.png"
-    plt.savefig(out, dpi=150, bbox_inches="tight", facecolor="white")
+    plt.savefig(out, dpi=150, facecolor="white")
     print(f"\nSaved comparison plot: {out}")
 
 

@@ -1,4 +1,3 @@
-import json
 import math
 import re
 from collections import defaultdict
@@ -10,6 +9,7 @@ from pyproj import Transformer
 from rdflib import Graph
 from shapely.geometry import Polygon, mapping
 from shapely.ops import unary_union
+from shapely.geometry.base import BaseGeometry
 
 from namespaces import bind_all
 
@@ -71,12 +71,11 @@ def wkt_to_utm_point(wkt: str) -> tuple[float, float] | None:
 
 
 def building_octagon_utm(cx: float, cy: float, area_m2: float) -> list[tuple[float, float]]:
-    """Return an 8-vertex regular polygon around (cx, cy) approximating a building of given footprint area.
+    """Create an area-scaled regular octagon around a building point.
 
-    The graph stores building geometry as centroid POINTs plus uhi:hasFootprintArea.
-    For the zone-heatmap cutout we only need the *aggregate* visual pattern, so an
-    octagonal approximation r = sqrt(area / pi) is adequate at zoom-out scales
-    (each building is at most a few pixels across when 4 km^2 of city fits on screen).
+    The representative point is preferred because it is guaranteed to lie
+    within the building footprint. This is used only when no real footprint
+    polygon is available.
     """
     r = math.sqrt(max(area_m2, 1.0) / math.pi)
     return [
@@ -88,6 +87,48 @@ def building_octagon_utm(cx: float, cy: float, area_m2: float) -> list[tuple[flo
 def utm_ring_to_lonlat(coords_utm: list[tuple[float, float]]) -> list[tuple[float, float]]:
     """Reproject a UTM32 ring of (E, N) to a WGS84 ring of (lon, lat) — Shapely's coordinate order."""
     return [TO_WGS84.transform(x, y) for x, y in coords_utm]
+
+
+def wkt_polygon_to_lonlat(wkt: str):
+    """Parse a UTM32 (Multi)Polygon WKT — including interior rings — into a
+    lon/lat shapely geometry. Returns None on failure."""
+    import shapely.wkt
+    from shapely.ops import transform as shp_transform
+
+    # Strip the GeoSPARQL CRS prefix (<...>) if present.
+    body = wkt.split(">", 1)[1].strip() if wkt.lstrip().startswith("<") else wkt
+    try:
+        geom = shapely.wkt.loads(body)
+    except Exception:
+        return None
+    if geom.is_empty or geom.geom_type not in ("Polygon", "MultiPolygon"):
+        return None
+    try:
+        geom_ll = shp_transform(
+            lambda x, y, z=None: TO_WGS84.transform(x, y), geom)
+        if not geom_ll.is_valid:
+            geom_ll = geom_ll.buffer(0)
+        return geom_ll if (geom_ll.is_valid and not geom_ll.is_empty) else None
+    except Exception:
+        return None
+
+
+def load_footprints_lonlat(g: Graph) -> list[BaseGeometry]:
+    """All real building footprint polygons (lon/lat) from the graph, written by
+    footprint_extractor.py via uhi:hasFootprintGeometry. Empty list if the
+    extractor has not been run."""
+    q = SPARQL_PREFIXES + """
+    SELECT ?fpwkt WHERE {
+        ?b uhi:hasFootprintGeometry ?fg .
+        ?fg geo:asWKT ?fpwkt .
+    }
+    """
+    polys = []
+    for row in g.query(q):
+        poly = wkt_polygon_to_lonlat(str(row.fpwkt))
+        if poly is not None:
+            polys.append(poly)
+    return polys
 
 
 def build_zone_heatmap_layer(g: Graph) -> tuple[folium.FeatureGroup, dict]:
@@ -109,29 +150,71 @@ def build_zone_heatmap_layer(g: Graph) -> tuple[folium.FeatureGroup, dict]:
         zone_info[zid] = {"score": float(row.score), "category": local_name(row.category)}
 
     building_query = SPARQL_PREFIXES + """
-    SELECT ?zone ?wkt ?footprint WHERE {
+    SELECT ?zone ?repWkt ?centroidWkt ?footprint ?fpwkt WHERE {
         ?b a bot:Building ;
-           uhi:inAnalysisZone ?zone ;
-           uhi:hasFootprintArea ?footprint ;
-           geo:hasGeometry ?geom .
-        ?geom geo:asWKT ?wkt .
+        uhi:inAnalysisZone ?zone ;
+        uhi:hasFootprintArea ?footprint .
+
+        OPTIONAL {
+            ?b uhi:hasRepresentativePointGeometry ?repGeom .
+            ?repGeom geo:asWKT ?repWkt .
+        }
+
+        OPTIONAL {
+            ?b uhi:hasCentroidGeometry ?centroidGeom .
+            ?centroidGeom geo:asWKT ?centroidWkt .
+        }
+
+        OPTIONAL {
+            ?b uhi:hasFootprintGeometry ?fg .
+            ?fg geo:asWKT ?fpwkt .
+        }
+
+        FILTER(BOUND(?repWkt) || BOUND(?centroidWkt))
     }
     """
-    buildings_by_zone: dict[str, list[Polygon]] = defaultdict(list)
+    buildings_by_zone: dict[str, list[BaseGeometry]] = defaultdict(list)
+    n_real, n_octagon = 0, 0
     for row in g.query(building_query):
         zid = local_name(row.zone)
-        pt = wkt_to_utm_point(str(row.wkt))
-        if pt is None:
-            continue
-        cx, cy = pt
-        coords_utm = building_octagon_utm(cx, cy, float(row.footprint))
-        coords_lonlat = utm_ring_to_lonlat(coords_utm)
-        try:
-            poly = Polygon(coords_lonlat)
-            if poly.is_valid and not poly.is_empty:
-                buildings_by_zone[zid].append(poly)
-        except Exception:
-            continue
+        poly = None
+        # Prefer the real footprint polygon (footprint_extractor.py); fall back
+        # to an area-faithful octagon around the representative point when absent.
+        if row.fpwkt is not None:
+            poly = wkt_polygon_to_lonlat(str(row.fpwkt))
+        if poly is not None:
+            n_real += 1
+        else:
+            point_wkt = (
+                row.repWkt
+                if row.repWkt is not None
+                else row.centroidWkt
+            )
+            pt = wkt_to_utm_point(str(point_wkt))
+            if pt is None:
+                continue
+            cx, cy = pt
+            coords_lonlat = utm_ring_to_lonlat(
+                building_octagon_utm(cx, cy, float(row.footprint)))
+            try:
+                poly = Polygon(coords_lonlat)
+            except Exception:
+                continue
+            if not (poly.is_valid and not poly.is_empty):
+                continue
+            n_octagon += 1
+        buildings_by_zone[zid].append(poly)
+    
+    total_cutouts = n_real + n_octagon
+    coverage = (
+        100.0 * n_real / total_cutouts
+        if total_cutouts
+        else 0.0
+    )
+    print(f"  Building cut-outs: {n_real} real footprints, "
+          f"{n_octagon} octagon fallback "
+          f"({coverage:.2f}% real geometry)"
+    )
 
     layer = folium.FeatureGroup(name="Zone vulnerability heatmap", show=False)
 
@@ -145,8 +228,19 @@ def build_zone_heatmap_layer(g: Graph) -> tuple[folium.FeatureGroup, dict]:
 
         building_polys = buildings_by_zone.get(zid, [])
         if building_polys:
-            buildings_union = unary_union(building_polys)
-            holed = zone_polygon.difference(buildings_union)
+            clipped_buildings = []
+
+            for building_poly in building_polys:
+                clipped = building_poly.intersection(zone_polygon)
+
+                if not clipped.is_empty:
+                    clipped_buildings.append(clipped)
+
+            if clipped_buildings:
+                buildings_union = unary_union(clipped_buildings)
+                holed = zone_polygon.difference(buildings_union)
+            else:
+                holed = zone_polygon
         else:
             holed = zone_polygon
 
@@ -391,13 +485,17 @@ def score_to_gradient_color(score: float, vmin: float, vmax: float) -> str:
     return "#bd0026"
 
 
-def build_gridcell_layer(g: Graph) -> folium.FeatureGroup | None:
+def build_gridcell_layer(g: Graph,
+                         footprints: list[BaseGeometry] | None = None
+                         ) -> folium.FeatureGroup | None:
     """Build a continuous-gradient FeatureGroup from uhi:GridCell assessments.
 
     Each 100 m grid cell is drawn as a polygon colored by a smooth gradient over
-    the per-cell score, giving lane-scale spatial variation instead of one flat
-    color per 1 km zone. Returns None if no grid cells exist in the graph
-    (i.e. subzone_grid.py has not been run).
+    the per-cell score. When real building footprints are supplied (from
+    footprint_extractor.py), they are punched out of every cell so the gradient
+    is displayed without the buildings — the risk surface reads as the open
+    urban space between the true building shapes. Returns None if no grid cells
+    exist in the graph (i.e. subzone_grid.py has not been run).
     """
     q = SPARQL_PREFIXES + """
     SELECT ?cell ?wkt ?score ?category WHERE {
@@ -416,32 +514,71 @@ def build_gridcell_layer(g: Graph) -> folium.FeatureGroup | None:
     scores = [float(r.score) for r in rows]
     vmin, vmax = min(scores), max(scores)
 
-    poly_re = re.compile(r"POLYGON\(\(([^)]+)\)\)")
-    layer = folium.FeatureGroup(name="Sub-zone gradient (100 m grid)", show=True)
+    # Spatial index over footprints for fast per-cell hole punching.
+    tree = None
+    if footprints:
+        from shapely.strtree import STRtree
+        tree = STRtree(footprints)
+
+    layer_name = ("Sub-zone gradient (100 m grid, buildings cut out)"
+                  if footprints else "Sub-zone gradient (100 m grid)")
+    layer = folium.FeatureGroup(name=layer_name, show=True)
 
     for r in rows:
-        m = poly_re.search(str(r.wkt))
-        if not m:
+        cell_poly = wkt_polygon_to_lonlat(str(r.wkt))
+        if cell_poly is None:
             continue
-        coords_utm = []
-        for pair in m.group(1).split(","):
-            x_str, y_str = pair.strip().split()
-            coords_utm.append((float(x_str), float(y_str)))
-        # Reproject ring UTM32 -> lon/lat, then to folium's [lat, lon]
-        latlon = [TO_WGS84.transform(x, y)[::-1] for x, y in coords_utm]
         score = float(r.score)
         color = score_to_gradient_color(score, vmin, vmax)
-        folium.Polygon(
-            locations=latlon,
-            color=None,
-            weight=0,
-            fill=True,
-            fill_color=color,
-            fill_opacity=0.65,
-            tooltip=folium.Tooltip(
-                f"Grid cell {local_name(r.cell)}<br>"
-                f"score {score:.3f}<br>{local_name(r.category)}"
-            ),
+        tooltip = folium.Tooltip(
+            f"Grid cell {local_name(r.cell)}<br>"
+            f"score {score:.3f}<br>{local_name(r.category)}"
+        )
+
+        shape = cell_poly
+        
+        if tree is not None:
+            matches = tree.query(cell_poly)
+
+            if len(matches):
+                first = matches[0]
+
+                # Shapely 2.x returns integer indices.
+                if isinstance(first, int) or hasattr(first, "item"):
+                    candidates = [
+                        footprints[int(index)]
+                        for index in matches
+                    ]
+
+                # Older Shapely versions may return geometry objects directly.
+                else:
+                    candidates = list(matches)
+
+                # STRtree returns bounding-box matches, so confirm that the
+                # geometries actually intersect the grid cell.
+                intersecting = [
+                    footprint
+                    for footprint in candidates
+                    if footprint.intersects(cell_poly)
+                ]
+
+                if intersecting:
+                    holes = unary_union(intersecting)
+                    shape = cell_poly.difference(holes)
+
+        if shape.is_empty:
+            continue
+
+        folium.GeoJson(
+            data={"type": "Feature", "geometry": mapping(shape),
+                  "properties": {}},
+            style_function=lambda _f, c=color: {
+                "fillColor": c,
+                "color": c,
+                "weight": 0,
+                "fillOpacity": 0.65,
+            },
+            tooltip=tooltip,
         ).add_to(layer)
 
     print(f"  Grid-cell gradient layer: {len(rows)} cells "
@@ -453,20 +590,38 @@ def build_map(g: Graph) -> None:
     print("\nBuilding interactive map …")
 
     q_map = SPARQL_PREFIXES + """
-    SELECT ?building ?wkt ?height ?footprint ?zone ?assessment ?score ?deltaT ?category
-    WHERE {
-        ?building a bot:Building ;
-                  uhi:hasMeasuredHeight ?height ;
-                  uhi:hasFootprintArea ?footprint ;
-                  uhi:inAnalysisZone ?zone ;
-                  geo:hasGeometry ?geom ;
-                  uhi:hasHeatRiskAssessment ?assessment .
-        ?geom geo:asWKT ?wkt .
-        ?assessment uhi:hasHeatRiskScore ?score ;
-                    uhi:hasIndicativeDeltaT ?deltaT ;
-                    uhi:hasRiskCategory ?category .
-    }
-    """
+        SELECT DISTINCT ?building ?repWkt ?centroidWkt
+               ?fpWkt ?height ?footprint ?zone
+               ?assessment ?score ?deltaT ?category
+        WHERE {
+            ?building a bot:Building ;
+                    uhi:hasMeasuredHeight ?height ;
+                    uhi:hasFootprintArea ?footprint ;
+                    uhi:inAnalysisZone ?zone ;
+                    uhi:hasHeatRiskAssessment ?assessment .
+
+            OPTIONAL {
+                ?building uhi:hasRepresentativePointGeometry ?repGeom .
+                ?repGeom geo:asWKT ?repWkt .
+            }
+
+            OPTIONAL {
+                ?building uhi:hasCentroidGeometry ?centroidGeom .
+                ?centroidGeom geo:asWKT ?centroidWkt .
+            }
+
+            OPTIONAL {
+                ?building uhi:hasFootprintGeometry ?footGeom .
+                ?footGeom geo:asWKT ?fpWkt .
+            }
+
+            FILTER(BOUND(?fpWkt) || BOUND(?repWkt) || BOUND(?centroidWkt))
+
+            ?assessment uhi:hasHeatRiskScore ?score ;
+                        uhi:hasIndicativeDeltaT ?deltaT ;
+                        uhi:hasRiskCategory ?category .
+        }
+        """
 
     m = folium.Map(location=[48.77984, 9.19057], zoom_start=14, tiles="CartoDB positron")
     layers = {
@@ -478,6 +633,11 @@ def build_map(g: Graph) -> None:
 
     plotted = 0
     skipped = 0
+    marker_sources = {
+        "footprint": 0,
+        "representative": 0,
+        "centroid": 0,
+    }
     category_counts = {key: 0 for key in layers}
 
     rows = list(g.query(q_map))
@@ -488,14 +648,51 @@ def build_map(g: Graph) -> None:
     print(f"  Plotting {len(rows)} assessed buildings …")
 
     for row in rows:
-        ll = wkt_to_latlon(str(row.wkt))
+        
+        ll = None
+        # Best option: derive the marker from the same polygon that is displayed
+        # as the building cut-out.
+        if row.fpWkt is not None:
+            footprint_geom = wkt_polygon_to_lonlat(
+                str(row.fpWkt)
+            )
+
+            if footprint_geom is not None:
+                marker_point = footprint_geom.representative_point()
+                ll = (
+                    marker_point.y,
+                    marker_point.x,
+                )
+                marker_sources["footprint"] += 1
+
+        # Fallback to the RDF representative point.
+        if ll is None and row.repWkt is not None:
+            ll = wkt_to_latlon(
+                str(row.repWkt)
+            )
+            if ll is not None:
+                marker_sources["representative"] += 1
+
+        # Final fallback to the mathematical centroid.
+        if ll is None and row.centroidWkt is not None:
+            ll = wkt_to_latlon(
+                str(row.centroidWkt)
+            )
+            if ll is not None:
+                marker_sources["centroid"] += 1
+
         if ll is None:
             skipped += 1
             continue
 
         category = local_name(row.category)
-        style = CATEGORY_STYLE.get(category, {"color": "#7f8c8d", "radius": 3})
-        layer = layers.get(category, layers["MediumRisk"])
+        category_key = (
+            category
+            if category in layers
+            else "MediumRisk"
+        )
+        style = CATEGORY_STYLE[category_key]
+        layer = layers[category_key]
         lat, lon = ll
         score = float(row.score)
         delta_t = float(row.deltaT)
@@ -531,18 +728,23 @@ def build_map(g: Graph) -> None:
         ).add_to(layer)
 
         plotted += 1
-        category_counts[category] = category_counts.get(category, 0) + 1
+        category_counts[category_key] += 1
 
     for layer in layers.values():
         layer.add_to(m)
 
     # Zone vulnerability heatmap (flat per-zone colour) — available but off by default.
-    zone_layer, zone_info = build_zone_heatmap_layer(g)
+    zone_layer, _ = build_zone_heatmap_layer(g)
     zone_layer.add_to(m)
 
     # Sub-zone gradient (100 m grid cells) — continuous spatial variation, the
-    # default zoomed-out view. Present only if subzone_grid.py has run.
-    grid_layer = build_gridcell_layer(g)
+    # default zoomed-out view. Present only if subzone_grid.py has run. Real
+    # building footprints (footprint_extractor.py) are cut out of the cells
+    # when available, so the gradient shows the space between buildings.
+    footprints = load_footprints_lonlat(g)
+    if footprints:
+        print(f"  Footprint cut-outs for gradient: {len(footprints)} buildings")
+    grid_layer = build_gridcell_layer(g, footprints=footprints or None)
     if grid_layer is not None:
         grid_layer.add_to(m)
 
@@ -580,6 +782,7 @@ def build_map(g: Graph) -> None:
     print(f"  Plotted : {plotted} buildings ({skipped} skipped)")
     print(f"  Counts  : {category_counts}")
     print(f"  Map saved: {MAP_FILE.name}")
+    print(f"  Marker geometry sources: {marker_sources}")
 
 
 def main() -> None:
@@ -600,4 +803,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    

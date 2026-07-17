@@ -184,101 +184,136 @@ def make_plot(cx, cy, s0, s1, c0, c1):
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         from matplotlib.colors import ListedColormap, BoundaryNorm
-        from matplotlib.patches import Patch
+        from matplotlib.patches import Patch, Rectangle
+        from matplotlib.collections import PatchCollection
     except ImportError:
         print("[i] matplotlib not installed; skipping plot.")
         return
-
+ 
     # ---------------------------------------------------------
-    # General styling
+    # General styling (unchanged)
     # ---------------------------------------------------------
     INK = "#1E2A33"
     ACCENT = "#B05A3C"
-
-    # Risk-category palette: Low -> Extreme
+ 
     CAT_COLORS = [
         "#FFF7BC",
         "#FEC44F",
         "#F03B20",
         "#7F0000",
     ]
-
+ 
     CAT_LABELS = [
         "Low",
         "Medium",
         "High",
         "Extreme",
     ]
-
-    cat_cmap = ListedColormap(CAT_COLORS)
-    cat_norm = BoundaryNorm(
-        [-0.5, 0.5, 1.5, 2.5, 3.5],
-        cat_cmap.N,
-    )
-
-    # Use the same blues in Panels 2 and 3
-    LEFT_EXTREME_C = "#08519C"       # dark blue
+ 
+    LEFT_EXTREME_C = "#08519C"      # dark blue
     OTHER_IMPROVED_C = "#6BAED6"    # light blue
     UNCHANGED_C = "#E3E7EB"         # light grey
-
+ 
+    CELL = 100.0                    # metres — matches subzone_grid.py
+    FILL_ALPHA = 0.6               # let the basemap show through
+ 
     # ---------------------------------------------------------
-    # Improvement groups
+    # Improvement groups (unchanged)
     # ---------------------------------------------------------
     improved = c1 < c0
-
-    left_extreme = (
-        (c0 == 3) &
-        (c1 < 3)
-    )
-
-    other_improved = (
-        improved &
-        ~left_extreme
-    )
-
+    left_extreme = (c0 == 3) & (c1 < 3)
+    other_improved = improved & ~left_extreme
     unchanged = ~improved
-
+ 
     n_improved = int(improved.sum())
     n_left_extreme = int(left_extreme.sum())
     n_other_improved = int(other_improved.sum())
     n_unchanged = int(unchanged.sum())
-
+ 
+    # ---------------------------------------------------------
+    # True-scale cell rectangles at the real UTM32 coordinates
+    # ---------------------------------------------------------
+    half = CELL / 2.0
+ 
+    def cell_rects(mask=None):
+        idx = range(len(cx)) if mask is None else np.flatnonzero(mask)
+        return [
+            Rectangle((cx[i] - half, cy[i] - half), CELL, CELL)
+            for i in idx
+        ]
+ 
+    def fill_cells(ax, facecolors):
+        """Draw all cells as filled 100 m squares."""
+        pc = PatchCollection(
+            cell_rects(),
+            facecolor=facecolors,
+            edgecolor="white",
+            linewidth=0.3,
+            alpha=FILL_ALPHA,
+            zorder=3,
+        )
+        ax.add_collection(pc)
+ 
+    def outline_cells(ax, mask, color, linewidth):
+        """Outline a subset of cells (improvement markers)."""
+        pc = PatchCollection(
+            cell_rects(mask),
+            facecolor="none",
+            edgecolor=color,
+            linewidth=linewidth,
+            zorder=4,
+        )
+        ax.add_collection(pc)
+ 
+    def cat_facecolors(categories):
+        return [CAT_COLORS[int(k)] for k in categories]
+ 
+    # Shared extent with a margin so basemap context (Schlossgarten,
+    # Hauptbahnhof, the Neckar slope) frames the grid.
+    PAD = 220.0
+    xlim = (cx.min() - half - PAD, cx.max() + half + PAD)
+    ylim = (cy.min() - half - PAD, cy.max() + half + PAD)
+ 
+    def add_basemap(ax):
+        """CartoDB Positron under the cells; silent no-op if unavailable."""
+        try:
+            import contextily as ctx
+            ctx.add_basemap(
+                ax,
+                crs="EPSG:25832",
+                source=ctx.providers.CartoDB.Positron,
+                zorder=1,
+                attribution_size=5,
+            )
+            return True
+        except Exception as exc:
+            print(f"[i] basemap unavailable ({exc}); plain background.")
+            return False
+ 
+    def finish_axis(ax, title):
+        ax.set_xlim(*xlim)
+        ax.set_ylim(*ylim)
+        ax.set_aspect("equal")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_title(title, fontsize=12, color=INK, weight="bold")
+ 
     # ---------------------------------------------------------
     # Create figure
     # ---------------------------------------------------------
     fig, axes = plt.subplots(
         1,
         3,
-        figsize=(15, 5.4),
+        figsize=(15, 5.8),
     )
-
+ 
     # ---------------------------------------------------------
     # Panel 1: Baseline risk map
     # ---------------------------------------------------------
-    axes[0].scatter(
-        cx,
-        cy,
-        c=c0,
-        cmap=cat_cmap,
-        norm=cat_norm,
-        s=52,
-        marker="s",
-        edgecolor="white",
-        linewidth=0.4,
-        alpha=1.0,
-    )
-
-    axes[0].set_title(
-        "Baseline risk category",
-        fontsize=12,
-        color=INK,
-        weight="bold",
-    )
-
-    axes[0].set_aspect("equal")
-    axes[0].set_xticks([])
-    axes[0].set_yticks([])
-
+    fill_cells(axes[0], cat_facecolors(c0))
+    finish_axis(axes[0], "Baseline risk category")
+    basemap_ok = add_basemap(axes[0])
+ 
     axes[0].legend(
         handles=[Patch(facecolor=c, edgecolor="none", label=l)
                  for c, l in zip(CAT_COLORS, CAT_LABELS)],
@@ -286,65 +321,16 @@ def make_plot(cx, cy, s0, s1, c0, c1):
         ncol=4, fontsize=8, frameon=False,
         columnspacing=0.9, handlelength=1.2, handletextpad=0.5,
     )
-
-
+ 
     # ---------------------------------------------------------
-    # Panel 2: After greening
-    #
-    # All cells retain their true after-intervention category.
-    # Improved cells are identified through outlines:
-    #
-    # Light blue = improved from Low/Medium/High
-    # Dark blue  = left ExtremeRisk
+    # Panel 2: After greening (fills = new category, outlines = change)
     # ---------------------------------------------------------
-
-    # Draw the complete after-intervention map
-    axes[1].scatter(
-        cx,
-        cy,
-        c=c1,
-        cmap=cat_cmap,
-        norm=cat_norm,
-        s=52,
-        marker="s",
-        edgecolor="white",
-        linewidth=0.4,
-        alpha=1.0,
-    )
-
-    # Outline cells that improved from non-Extreme categories
-    axes[1].scatter(
-        cx[other_improved],
-        cy[other_improved],
-        facecolors="none",
-        edgecolors=OTHER_IMPROVED_C,
-        s=58,
-        marker="s",
-        linewidth=1.2,
-    )
-
-    # Outline cells that left ExtremeRisk
-    axes[1].scatter(
-        cx[left_extreme],
-        cy[left_extreme],
-        facecolors="none",
-        edgecolors=LEFT_EXTREME_C,
-        s=62,
-        marker="s",
-        linewidth=1.8,
-    )
-
-    axes[1].set_title(
-        "After greening",
-        fontsize=12,
-        color=INK,
-        weight="bold",
-    )
-
-    axes[1].set_aspect("equal")
-    axes[1].set_xticks([])
-    axes[1].set_yticks([])
-
+    fill_cells(axes[1], cat_facecolors(c1))
+    outline_cells(axes[1], other_improved, OTHER_IMPROVED_C, 1.2)
+    outline_cells(axes[1], left_extreme, LEFT_EXTREME_C, 1.8)
+    finish_axis(axes[1], "After greening")
+    add_basemap(axes[1])
+ 
     axes[1].legend(
         handles=[Patch(facecolor=c, edgecolor="none", label=l)
                  for c, l in zip(CAT_COLORS, CAT_LABELS)] + [
@@ -354,50 +340,24 @@ def make_plot(cx, cy, s0, s1, c0, c1):
                   linewidth=1.2, label="improved"),
         ],
         loc="upper center", bbox_to_anchor=(0.5, -0.03),
-        ncol=2, fontsize=8, frameon=False,
+        ncol=3, fontsize=8, frameon=False,
         columnspacing=0.9, handlelength=1.2, handletextpad=0.5,
     )
-
+ 
     # ---------------------------------------------------------
     # Panel 3: Improvement breakdown
-    #
-    # Uses the exact same blues as Panel 2:
-    #
-    # Dark blue  = left ExtremeRisk
-    # Light blue = improved from another category
-    # Grey       = unchanged
     # ---------------------------------------------------------
-    panel3_colors = np.full(
-        len(c0),
-        UNCHANGED_C,
-        dtype=object,
-    )
-
+    panel3_colors = np.full(len(c0), UNCHANGED_C, dtype=object)
     panel3_colors[other_improved] = OTHER_IMPROVED_C
     panel3_colors[left_extreme] = LEFT_EXTREME_C
-
-    axes[2].scatter(
-        cx,
-        cy,
-        c=panel3_colors,
-        s=52,
-        marker="s",
-        edgecolor="white",
-        linewidth=0.4,
-        alpha=1.0,
-    )
-
-    axes[2].set_title(
+ 
+    fill_cells(axes[2], list(panel3_colors))
+    finish_axis(
+        axes[2],
         f"Category improvement breakdown ({n_improved})",
-        fontsize=12,
-        color=INK,
-        weight="bold",
     )
-
-    axes[2].set_aspect("equal")
-    axes[2].set_xticks([])
-    axes[2].set_yticks([])
-
+    add_basemap(axes[2])
+ 
     axes[2].legend(
         handles=[
             Patch(facecolor=LEFT_EXTREME_C, edgecolor="none",
@@ -411,7 +371,7 @@ def make_plot(cx, cy, s0, s1, c0, c1):
         ncol=3, fontsize=8, frameon=False,
         columnspacing=0.9, handlelength=1.2, handletextpad=0.5,
     )
-
+ 
     # ---------------------------------------------------------
     # Overall figure title
     # ---------------------------------------------------------
@@ -426,22 +386,23 @@ def make_plot(cx, cy, s0, s1, c0, c1):
         weight="bold",
         y=1.00,
     )
-
+ 
     fig.subplots_adjust(
         bottom=0.24,
-        wspace=0.12,
+        wspace=0.10,
     )
-
+ 
     plt.savefig(
         "intervention_map.png",
         dpi=200,
         bbox_inches="tight",
         facecolor="white",
     )
-
+ 
     plt.close(fig)
-
-    print("Saved intervention_map.png")
+ 
+    suffix = "with basemap" if basemap_ok else "WITHOUT basemap (offline?)"
+    print(f"Saved intervention_map.png ({suffix})")
     
 
 if __name__ == "__main__":

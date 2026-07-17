@@ -2,7 +2,7 @@
 
 An RDF/OWL knowledge graph for cross-source urban heat-risk assessment in Stuttgart-Mitte. Five heterogeneous urban data sources are integrated through shared zone and building URIs into a single semantic model, enabling SPARQL-based querying, explanation, and decision support for heat-vulnerable buildings.
 
-The graph currently covers four 1 km² analysis zones in Stuttgart-Mitte (4 km² total), containing 5,801 buildings and approximately 159,000 triples.
+The graph currently covers four 1 km² analysis zones in Stuttgart-Mitte (4 km² total), containing 5,801 buildings and approximately 222,000 triples.
 
 ## Goal and contribution
 
@@ -56,16 +56,17 @@ Each indicator is grounded in published UHI literature. The indicator ordering (
 | Step | Script | Purpose |
 |---|---|---|
 | 1 | `citygml_to_rdf.py` | Convert LoD2 buildings to RDF (building/zone triples) |
-| 2 | `climate_data.py` | Fetch Open-Meteo temperatures as SOSA observations |
-| 3 | `osm_enrichment.py` | Add OSM vegetation fraction, tree count, types |
-| 4 | `svf_calculator.py` | Geometric SVF per building (256-ray cast vs LoD2 surfaces) |
-| 5 | `clms_landcover.py` | Per-zone tree canopy + imperviousness from CLMS HRL 10 m |
-| 6 | `terrain_dgm.py` | Per-zone topographic exposure from DGM1 via `terrain_tpi.py` |
-| 7 | `risk_assessment.py` | Zone + building assessments (1st pass, default ΔT) |
-| 8 | `uhi_calibration.py` | Calibrate ΔT from DWD stations; write α/β to graph |
-| 9 | `risk_assessment.py` | Re-apply assessments with calibrated ΔT (2nd pass) |
-| 10 | `subzone_grid.py` | 100 m grid-cell scoring (400 `uhi:GridCell` instances) |
-| 11 | `queries_and_viz.py` | SPARQL queries + interactive Folium map |
+| 2 | `footprint_extractor.py` | Real 2D footprint polygons from LoD2 GroundSurfaces (roof fallback) |
+| 3 | `climate_data.py` | Fetch Open-Meteo temperatures as SOSA observations |
+| 4 | `osm_enrichment.py` | Add OSM vegetation fraction, tree count, types |
+| 5 | `svf_calculator.py` | Geometric SVF per building (256-ray cast vs LoD2 surfaces) |
+| 6 | `clms_landcover.py` | Per-zone tree canopy + imperviousness from CLMS HRL 10 m |
+| 7 | `terrain_dgm.py` | Per-zone topographic exposure from DGM1 via `terrain_tpi.py` |
+| 8 | `risk_assessment.py` | Zone + building assessments (1st pass, default ΔT) |
+| 9 | `uhi_calibration.py` | Calibrate ΔT from DWD stations; write α/β to graph |
+| 10 | `risk_assessment.py` | Re-apply assessments with calibrated ΔT (2nd pass) |
+| 11 | `subzone_grid.py` | 100 m grid-cell scoring (400 `uhi:GridCell` instances) |
+| 12 | `queries_and_viz.py` | SPARQL queries + interactive Folium map |
 
 ```bash
 # Full pipeline (automatic venv management):
@@ -74,6 +75,7 @@ python run.py
 # Or manually:
 source .venv/bin/activate
 python citygml_to_rdf.py
+python footprint_extractor.py
 python climate_data.py
 python osm_enrichment.py
 python svf_calculator.py
@@ -99,23 +101,38 @@ python queries_and_viz.py
 
 ## Validation
 
-**Theoretical — Theeuwes (2017):** `theeuwes_validation.py` compares the composite zone ranking against the diagnostic UHI_max equation of Theeuwes et al. (2017, Int. J. Climatology 37:443–454). Spearman ρ = 1.000 (shared TCD input), ρ = 0.800 (independent OSM vegetation input).
+**Theoretical — Theeuwes (2017):** `theeuwes_validation.py` compares the composite zone ranking against the diagnostic UHI_max equation of Theeuwes et al. (2017, Int. J. Climatology 37:443–454). Spearman ρ = 1.000 for both the shared-TCD and independent OSM vegetation variants.
 
-**Empirical — Landsat 8/9 surface temperature:** `lst_validation.py` correlates the model's risk scores (which use no thermal input) against observed Landsat Level-2 surface temperature from four cloud-free summer 2024 scenes (Jul 29, Jul 30, Aug 23, Aug 31).
+**Empirical — Landsat 8/9 surface temperature:** `lst_validation.py`
+correlates the model's risk scores (which use no thermal input) against
+observed Landsat Level-2 surface temperature from four cloud-free summer
+2024 scenes (Jul 29, Jul 30, Aug 23, Aug 31; ~10:10 UTC overpass, i.e.
+midday local surface conditions).
 
 | Scale | Spearman ρ | n |
 |---|---|---|
-| Zone | 1.000 | 4 |
-| Grid cell (100 m) | 0.599 | 400 |
-| Building | 0.507 | 5,801 |
+| Zone | 1.000 | 4 (consistency check) |
+| Grid cell (100 m) | 0.610 | 400 |
+| Building | 0.506 | 5,801 |
 
-The grid-cell ρ = 0.60 (n = 400, p < 0.001) is the statistically robust result. LST at ~10:00 UTC measures surface temperature, not air temperature, so moderate-to-strong positive ρ is the expected honest result.
+The grid-cell ρ = 0.61 (n = 400, p < 0.001) is the statistically robust
+result. The score itself is a time-independent structural susceptibility
+index (built form + 2023/24 land cover + 2024 heat-day climatology); LST
+at ~10:10 UTC measures midday *surface* temperature, not the nocturnal
+air-temperature UHI, so moderate-to-strong positive ρ is the expected
+honest result.
 
-**Sensitivity:** `sensitivity_analysis.py` perturbs the composite weights ±25% across 1,000 random draws. Risk rankings are preserved (Spearman ρ = 0.996) and agreement with satellite LST holds (ρ = 0.56–0.64). The model's conclusions do not depend on the exact heuristic weight values.
+**Canopy data caveat:** cell and zone canopy derive from CLMS HRL Tree Cover Density 2023, which in this study area behaves as a near-binary detector of contiguous canopy (median nonzero pixel value 92%); isolated street and plaza trees are not captured, so baseline canopy in the dense urban core is conservative. For the intervention showcase cell this was corroborated against the municipal Baumkataster (2 young trees on record).
+Diagnostics: `diagnose_cell_canopy.py`, `diagnose_tcd_raster.py`.
+
+**Sensitivity:** `sensitivity_analysis.py` perturbs the composite weights ±25% across 1,000 random draws. Risk rankings are preserved (Spearman ρ = 0.997) and agreement with satellite LST holds (ρ = 0.57–0.65). The model's conclusions do not depend on the exact heuristic weight values.
 
 ## Intervention scenarios
 
-`intervention_example.py` demonstrates the decision-support capability: because every indicator is an explicit node in the graph, "what could be changed?" is a counterfactual query rather than a new study. Three greening scenarios (street trees: canopy +20 pp; de-sealing: imperviousness −15 pp; combined) are applied to all 400 grid cells and scores are recomputed with the identical model. The combined programme moves 34 of 75 ExtremeRisk cells out of the top category and identifies the highest-leverage intervention candidates (fully sealed, zero-canopy cells). SVF and density are structural (built form) and not modifiable by greening, so the model also shows where greening alone cannot help — cells where urban form dominates the risk. Scenario magnitudes are parameterised (`--canopy`, `--imperv`); `--plot` renders a before/after category map.
+`intervention_example.py` demonstrates the decision-support capability: because every indicator is an explicit node in the graph, "what could be changed?" is a counterfactual query rather than a new study. Three greening scenarios (street trees: canopy +20 pp; de-sealing: imperviousness −15 pp; combined) are applied to all 400 grid cells and scores are recomputed with the identical model. The combined programme improves 99 of 400 cells by at least one risk
+category ("improve" = category change; nearly all urban cells improve in raw score), moves 30 of 75 ExtremeRisk cells out of the top category, and identifies the highest-leverage intervention candidates (fully sealed, zero-canopy cells). SVF and density are structural (built form) and not modifiable by greening, so the model also shows where greening alone cannot help — cells where urban form dominates the risk. Scenario magnitudes are parameterised (`--canopy`, `--imperv`); `--plot` renders a before/after category map.
+
+Both category maps are rendered as true-scale 100 m cells over a CartoDB Positron basemap of Stuttgart-Mitte. The showcase cell for the combined scenario (`extreme_risk_improved_cell_query.py`, `selected_greening_cell.geojson`) was selected by ranking improving ExtremeRisk cells on a first-stage physical screening (non-building impervious area vs. required de-sealing) and then manually verified against aerial imagery; the top-ranked candidate was excluded because its open impervious surface is arterial roadway (B14) and active Stuttgart 21 construction.
 
 ## Visualisation
 
@@ -124,6 +141,10 @@ The grid-cell ρ = 0.60 (n = 400, p < 0.001) is the statistically robust result.
 - **Zoom < 15:** 100 m sub-zone risk gradient (continuous YlOrRd color scale)
 - **Zoom ≥ 15:** individual building markers by risk category
 - **Toggleable:** flat zone heatmap with building cutouts (alternative low-zoom view)
+
+Building cutouts use the real footprint polygons written by `footprint_extractor.py` (`uhi:hasFootprintGeometry`, extracted from the LoD2 GroundSurfaces); buildings without an extractable footprint fall back to an area-faithful octagon around the centroid. When footprints are present, the 100 m gradient is also rendered with the buildings punched out, so the risk surface shows the open space between the true building shapes.
+
+Static figures (`intervention_map.png`, `lst_cell_validation.png`) draw the 100 m cells at true scale over a CartoDB Positron basemap (contextily), so the grid reads as ground cells on the Stuttgart-Mitte street network rather than abstract squares.
 
 ## Installation
 
@@ -170,15 +191,16 @@ ORDER BY DESC(?score)
 
 | File | Generated by |
 |---|---|
-| `stuttgart_buildings.ttl` | Pipeline (~159k triples) |
+| `stuttgart_buildings.ttl` | Pipeline (~222k triples) |
 | `stuttgart_heat_risk_map.html` | `queries_and_viz.py` |
 | `sensitivity_tornado.png` | `sensitivity_analysis.py --plot` |
 | `sensitivity_lst_hist.png` | `sensitivity_analysis.py --plot` |
 | `lst_cell_validation.png` | `lst_validation.py --plot` |
 | `validation_figure.png` | `make_validation_figure.py` |
 | `intervention_map.png` | `intervention_example.py --plot` |
+| `selected_greening_cell.geojson` | `extreme_risk_improved_cell_query.py` |
 
-All outputs are gitignored and regenerated by their respective scripts.
+All PNG/HTML/TTL outputs are gitignored and regenerated by their respective scripts; the showcase-cell GeoJSON is committed as the documented scenario input.
 
 ## Attribution
 

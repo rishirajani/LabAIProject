@@ -1,0 +1,54 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              9.179675872829295,
+              48.778961309200064
+            ],
+            [
+              9.181037046612312,
+              48.77895917922877
+            ],
+            [
+              9.181040281716657,
+              48.779858770977114
+            ],
+            [
+              9.179679083609994,
+              48.77986090101544
+            ],
+            [
+              9.179675872829295,
+              48.778961309200064
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "cell_id": "Cell_513_5402_02_09",
+        "zone_id": "Zone_513_5402",
+        "baseline_score": 0.5006,
+        "baseline_category": "ExtremeRisk",
+        "scenario_score": 0.4656,
+        "scenario_category": "HighRisk",
+        "canopy_baseline": 0.0,
+        "canopy_scenario": 0.2,
+        "impervious_baseline": 0.8407,
+        "impervious_scenario": 0.6907,
+        "required_new_canopy_m2": 2000.0,
+        "required_desealing_m2": 1500.0,
+        "building_area_m2": 961.9,
+        "non_building_impervious_proxy_m2": 7445.1,
+        "open_area_m2": 9038.1,
+        "canopy_fits_open_area": true,
+        "passes_area_screening": true
+      }
+    }
+  ]
+}
